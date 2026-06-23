@@ -4,6 +4,18 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width,initial-scale=1" />
 <title>Dragon World</title>
+<!-- Google Analytics 4 — Measurement ID G-CMGKK1KJ41 (Dragon World property,
+     "Dragon World Github Page" web stream). trackEvent() further down in the
+     page is wrapped in a typeof-check + try/catch specifically so that an
+     ad-blocker silently blocking this script (common, and not something you
+     can prevent) degrades to "no analytics," never to "broken game." -->
+<script async src="https://www.googletagmanager.com/gtag/js?id=G-CMGKK1KJ41"></script>
+<script>
+  window.dataLayer = window.dataLayer || [];
+  function gtag(){dataLayer.push(arguments);}
+  gtag('js', new Date());
+  gtag('config', 'G-CMGKK1KJ41');
+</script>
 <style>
   /* Invasion-popup typography: Cinzel Decorative for the big state titles
      (Under Attack / Liberated / Captured), Cinzel for everything else in the
@@ -906,6 +918,17 @@ let shadowsOn=true;
 // fight-specific — storms/snow run the same in Explore and Defend — so this
 // is a general baseline toggle rather than a combat-specific one.
 let weatherOn=true;
+// Thin wrapper around gtag() for the handful of custom events below (game
+// start, battle start/win/loss, invasion accept/decline). The typeof check
+// + try/catch means an ad-blocker silently blocking the GA4 script (very
+// common, and nothing a player did wrong) just results in "no analytics
+// recorded" rather than a thrown error breaking anything else on the page —
+// analytics should never be able to affect whether the game actually works.
+function trackEvent(name, params){
+  if(typeof gtag==='function'){
+    try{ gtag('event', name, params||{}); }catch(e){}
+  }
+}
 function initMusic(){
   if(bgMusic) return;
   bgMusic=new Audio(ASSET.music);
@@ -1905,6 +1928,7 @@ function hideOrbContent(){
 function invasionAccept(){
   if(_invasionState!=='popup') return;
   playOkClick();
+  trackEvent('invasion_accepted',{country:_invasionCountry.n});
   document.getElementById('invasionPopup').style.display='none';
   _invasionState='enroute';
   _invasionTimer=_invasionCountdownTotal;
@@ -1915,6 +1939,7 @@ function invasionAccept(){
 function invasionDecline(){
   if(_invasionState!=='popup') return;
   playOkClick();
+  trackEvent('invasion_declined',{country:_invasionCountry.n});
   showInvasionCaptured();
 }
 
@@ -1924,6 +1949,13 @@ function invasionDecline(){
 // when _invasionState==='fighting').
 function showInvasionCaptured(){
   hideOrbContent();
+  // Captured this exact moment as 'wasFighting' before _invasionState gets
+  // overwritten below — this function is shared by three different paths
+  // (losing an active fight, declining outright, and timing out en route
+  // before ever reaching the target), and only the first of those is an
+  // actual battle loss. Without this check, declines/timeouts would get
+  // miscounted as battles fought.
+  const wasFighting = (_invasionState==='fighting');
   // End the battle-music crossfade if it was actually running — covers
   // losing an active fight AND timing out mid-flight after Accept (both had
   // Defend clicked, so battleMusic/the fade is genuinely live); correctly a
@@ -1932,6 +1964,7 @@ function showInvasionCaptured(){
   // and battleMusic either null or already paused/silent).
   if(_battleFadeDir>0 || (battleMusic && !battleMusic.paused)) endBattleMusic();
   _invasionState='captured';
+  trackEvent(wasFighting?'battle_lost':'invasion_failed',{country:_invasionCountry.n});
   chronicleRecordLost(_invasionCountry);
   document.getElementById('invasionFrame').classList.add('style-grey'); // somber/desaturated frame
   document.getElementById('invasionTitle').textContent='Captured';
@@ -1950,6 +1983,7 @@ function showInvasionCaptured(){
 function showInvasionLiberated(){
   endBattleMusic(); // battle.mp3 fades out, combat.mp3 fades back in
   _invasionState='liberated';
+  trackEvent('battle_won',{country:_invasionCountry.n});
   chronicleRecordLiberated(_invasionCountry);
   document.getElementById('invasionFrame').classList.remove('style-grey'); // gold frame
   document.getElementById('invasionTitle').textContent='Liberated!';
@@ -2013,6 +2047,7 @@ function invasionOk(){
 function triggerInvasionSuccess(){
   hideOrbContent();
   _invasionState='fighting';
+  trackEvent('battle_started',{country:_invasionCountry.n});
   respawnEnemy(countryRadialDir(_invasionCountry));
   if(enemyVisual) enemyVisual.visible = true;
   status('The enemy has arrived to defend '+_invasionCountry.n+'!');
@@ -6463,6 +6498,7 @@ function stopLoadingMessages(){
 document.getElementById('go').onclick=()=>{
   const goBtn=document.getElementById('go');
   goBtn.disabled=true;
+  trackEvent('game_started');
   playStartSound();
   startLoadingMessages();
   let _loadFailsafeTimer=null;
