@@ -737,7 +737,15 @@
             <div class="settings-control-row"><span class="settings-key">Left Arrow</span><span class="settings-action">Fly Left</span></div>
             <div class="settings-control-row"><span class="settings-key">Space</span><span class="settings-action">Breathe Fire</span></div>
             <div class="settings-control-row"><span class="settings-key">T</span><span class="settings-action">Switch Camera (Top-down / Cinematic / Action)</span></div>
+          </div>
+        </div>
+        <img class="chronicle-div" src="assets/divider.webp" alt="">
+        <div class="settings-section">
+          <div class="chronicle-heading">Graphics (Video and Audio)</div>
+          <div class="settings-controls-list">
+            <div class="settings-control-row"><span class="settings-key">L</span><span class="settings-action">Toggle Dragon Shadows (On / Off)</span></div>
             <div class="settings-control-row"><span class="settings-key">P</span><span class="settings-action">Toggle Country Borders (On / Off)</span></div>
+            <div class="settings-control-row"><span class="settings-key">K</span><span class="settings-action">Toggle Weather Effects — Rain / Snow / Lightning (On / Off)</span></div>
             <div class="settings-control-row"><span class="settings-key">M</span><span class="settings-action">Toggle Music (On / Off)</span></div>
             <div class="settings-control-row"><span class="settings-key">N</span><span class="settings-action">Toggle Sound Effects (On / Off)</span></div>
           </div>
@@ -885,6 +893,19 @@ let fireBreath=null, fireMats=[], fireTopPlane=null, fireGlow=null, mouthBone=nu
 // the track is even created (e.g. if someone clicks the pill before TAKE FLIGHT).
 let bgMusic=null, musicOn=true;
 let sfxOn=true; // controls biome ambience + proximity sounds (storm/snow/dolphin) + cloud poof — independent from musicOn
+// Toggles renderer.shadowMap.enabled directly rather than per-mesh castShadow
+// flags. Both dragons are the only shadow casters in the whole scene (the
+// only receiver is a single ground-decal plane beneath them), so skipping
+// the entire shadow pass has the same visual effect as toggling each dragon
+// individually, but is simpler and also skips the shadow-map bind/clear
+// overhead, not just the geometry submission.
+let shadowsOn=true;
+// Gates the per-frame rain/snow/lightning update cost in updateWeather() —
+// up to 6 storms x 180 drops + polar snow banks x 140 flakes, each doing a
+// full GPU buffer re-upload every frame. Unlike shadowsOn, this isn't
+// fight-specific — storms/snow run the same in Explore and Defend — so this
+// is a general baseline toggle rather than a combat-specific one.
+let weatherOn=true;
 function initMusic(){
   if(bgMusic) return;
   bgMusic=new Audio(ASSET.music);
@@ -979,6 +1000,48 @@ function toggleSfx(){
   if(el) el.textContent='🔊 SFX: '+(sfxOn?'ON':'OFF');
   status('Sound effects: '+(sfxOn?'ON':'OFF'));
   _syncSoundSwitches();
+}
+// Both dragons are the only shadow casters in the scene, so disabling the
+// whole shadow pass via renderer.shadowMap.enabled has the same visual
+// result as toggling each dragon's castShadow individually, with less code
+// and a slightly bigger win (also skips the shadow-map bind/clear step,
+// not just geometry submission). Mainly useful during fights, when both
+// dragons are active and that pass runs at double its normal cost.
+function toggleShadows(){
+  shadowsOn=!shadowsOn;
+  renderer.shadowMap.enabled=shadowsOn;
+  // renderer.shadowMap.enabled=false only stops the shadow texture from being
+  // refreshed — it doesn't clear it, and doesn't hide shadowPlane (the actual
+  // dark ground-decal mesh), which keeps being rendered regardless. Without
+  // this line, shadowPlane keeps sampling whatever stale shadow pattern was
+  // last rendered the instant shadows were switched off, while still being
+  // repositioned every frame by updateShadow() (which isn't gated on
+  // shadowsOn) — so it visibly drags along under the dragon as a frozen,
+  // increasingly-wrong smudge instead of just disappearing.
+  if(shadowPlane) shadowPlane.visible=shadowsOn;
+  status('Shadows: '+(shadowsOn?'ON':'OFF'));
+}
+// Immediately tears down any currently-running rain/snow/lightning rather
+// than just freezing it in place when turned off — same "stop and tidy up
+// now" approach toggleSfx() uses above. Storm-bank/snow-bank MEMBERSHIP
+// (_stormBanks/_snowBanks, which banks of cloud are currently "assigned" as
+// weather) is deliberately left untouched so reshuffleStorms()'s normal
+// schedule just keeps ticking in the background; toggling back on resumes
+// naturally rather than needing a fresh reshuffle.
+function toggleWeather(){
+  weatherOn=!weatherOn;
+  if(!weatherOn){
+    for(let bi=0;bi<CLOUD_BANKS.length;bi++){
+      const w=WEATHER[bi];
+      if(!w) continue;
+      if(w.rainParticles) removeRainForBank(bi);
+      if(w.snowParticles) removeSnowForBank(bi);
+      if(w.lightningGroup){ scene.remove(w.lightningGroup); w.lightningGroup=null; }
+      w.lightningFlashT=-1;
+    }
+    if(_weatherHudEl) _weatherHudEl.style.display='none';
+  }
+  status('Weather effects: '+(weatherOn?'ON':'OFF'));
 }
 
 // ── Sound / Help HUD dropdowns ──────────────────────────────────────────────
@@ -2049,6 +2112,12 @@ const _weatherHudEl = document.getElementById('weatherH');
 const STORM_COUNT_MIN = 2;
 const STORM_COUNT_MAX = 6;
 let _stormBanks = new Set();       // currently active storm bank indices
+// Scratch objects for the rain/snow per-bank anchor calculation in
+// updateWeather() — previously 2-3 fresh Vector3 clones (plus a fresh
+// Vector3(0,1,0)) per active storm/snow bank, every frame. Same GC-pressure
+// pattern as the enemy AI loop, just here it ran constantly regardless of
+// game mode rather than only during fights.
+const _weatherUp=new THREE.Vector3(), _weatherCloudBase=new THREE.Vector3(), _weatherYAxis=new THREE.Vector3(0,1,0);
 let _snowBanks  = new Set();       // cloud banks in polar regions — snow clouds
 let _stormReshuffleTimer = 0;
 const STORM_RESHUFFLE_INTERVAL = 45; // seconds between storm pattern changes
@@ -2116,7 +2185,7 @@ function buildGlobalRoundCloudBanks(){
       lat, lon,
       rx:r,
       ry:r*roundness,
-      count:8+Math.floor(rnd(8000+i*47)*12),
+      count:4+Math.floor(rnd(8000+i*47)*6),
       alt:1.34+rnd(9000+i*53)*0.28
     });
   }
@@ -2356,6 +2425,17 @@ let _enemyAppearRoarPlayed = false;
 let eRadial  = new THREE.Vector3(-0.20, 0.55, -0.81).normalize();
 let eForward = new THREE.Vector3(0,0,1);
 let eRight   = new THREE.Vector3();
+// Scratch objects for updateEnemyDragon — this only runs during 'fighting'
+// (see the early-return guards in that function), so these specifically
+// target the per-frame allocation cost during fights, same pattern as the
+// cloud collision scratch vectors above. Previously this function did ~8
+// fresh Vector3/Matrix4 allocations every frame via .clone()/new — real but
+// individually tiny garbage, the kind that causes occasional GC-pause
+// stutters rather than a steady cost. Reusing these removes that entirely.
+const _eaiPlayerPos=new THREE.Vector3(), _eaiToPlayer=new THREE.Vector3(),
+      _eaiCross=new THREE.Vector3(), _eaiToEnemy=new THREE.Vector3(),
+      _eaiPerp=new THREE.Vector3(), _eaiNegRight=new THREE.Vector3(),
+      _eaiBasis=new THREE.Matrix4();
 let eAltitude= 0.76;
 let eSpeed   = 0.038;
 // Enemy AI state
@@ -2594,11 +2674,23 @@ function tex(url,opts={}){const t=new THREE.TextureLoader(LOAD_MANAGER).load(url
 function init(){
   scene=new THREE.Scene(); scene.background=null; scene.fog=new THREE.FogExp2(0x02040a,0.0017);
   camera=new THREE.PerspectiveCamera(58,innerWidth/innerHeight,0.03,1000);
-  renderer=new THREE.WebGLRenderer({canvas,antialias:true,powerPreference:'high-performance'});
-  renderer.setSize(innerWidth,innerHeight); renderer.setPixelRatio(Math.min(devicePixelRatio,1.75));
+  // antialias:false and a lower pixel-ratio cap are deliberate performance
+  // trade-offs: the Earth's fragment shader samples 23 textures per pixel
+  // across a near-fullscreen sphere, plus a second full-resolution transparent
+  // "shell" sphere on top for ocean sparkle (4 more samples) — fragment cost
+  // scales with pixel count, so dropping from 1.75x to 1.0x cuts that
+  // dominant cost by roughly 3x. MSAA would multiply the same expensive
+  // shader across edge samples, so it's off rather than compensating with a
+  // cheaper post-process AA pass.
+  renderer=new THREE.WebGLRenderer({canvas,antialias:false,powerPreference:'high-performance'});
+  renderer.setSize(innerWidth,innerHeight); renderer.setPixelRatio(Math.min(devicePixelRatio,1.0));
   renderer.setClearColor(0x000000,1);
   renderer.outputEncoding=THREE.sRGBEncoding; renderer.toneMapping=THREE.ACESFilmicToneMapping; renderer.toneMappingExposure=1.08;
-  renderer.shadowMap.enabled=true; renderer.shadowMap.type=THREE.PCFSoftShadowMap;
+  // PCFShadowMap instead of PCFSoftShadowMap: the soft variant takes extra
+  // samples per shadowed fragment for the blurred edge; with shadow casters
+  // limited to the small dragon meshes, the visual difference is minor but
+  // the per-pixel cost difference isn't.
+  renderer.shadowMap.enabled=true; renderer.shadowMap.type=THREE.PCFShadowMap;
   clock=new THREE.Clock();
   scene.add(hemLight = new THREE.HemisphereLight(0xcfe8ff,0x101820,1.45));
   sunLight = new THREE.DirectionalLight(0xffffff,2.2); sunLight.position.set(-18,14,12); scene.add(sunLight);
@@ -3116,7 +3208,7 @@ function makeClouds(){
   // Phase 1.2: compact opaque white cumulus puffs.  The puffs are real lit spheres,
   // while very soft low-opacity mist sprites inside each bank blur the visible
   // intersections so the cluster reads as one fluffy cloud instead of separate balls.
-  const puffGeo=new THREE.SphereBufferGeometry(1,20,14);
+  const puffGeo=new THREE.SphereBufferGeometry(1,10,7);
   _puffGeo = puffGeo;
   const mats=[
     new THREE.MeshLambertMaterial({color:0xffffff,transparent:false,depthWrite:true}),
@@ -3155,7 +3247,7 @@ function makeClouds(){
     map:shadowTex, color:0x000000, transparent:true, opacity:0.42,
     depthWrite:false, depthTest:true, side:THREE.DoubleSide
   });
-  const shadowGeo=new THREE.CircleBufferGeometry(1,80);
+  const shadowGeo=new THREE.CircleBufferGeometry(1,24);
 
   function rnd(seed){let x=Math.sin(seed*12.9898)*43758.5453; return x-Math.floor(x);}
   CLOUD_BANKS.forEach((bank,bi)=>{
@@ -3209,6 +3301,7 @@ function makeClouds(){
       const s=(0.60+rnd((bi+1)*541+j*17)*0.30)*Math.max(bank.rx,bank.ry)*1.35;
       mist.scale.set(s,s*(0.88+rnd((bi+1)*557+j*19)*0.16),1);
       mist.userData.home=pos.clone();
+      mist.userData.homeDir=pos.clone().normalize();
       group.add(mist);
     }
 
@@ -3693,6 +3786,7 @@ function flashCloudPuffs(bi, t){
 function updateWeather(dt, t){
   if(!_weatherInitDone) initWeather();
   if(!cloudsVisible){ if(_weatherHudEl) _weatherHudEl.style.display='none'; return; }
+  if(!weatherOn) return; // toggleWeather() already tore down active rain/snow/lightning and hid the HUD when this was switched off
 
   _stormReshuffleTimer += dt;
   if(_stormReshuffleTimer >= STORM_RESHUFFLE_INTERVAL){
@@ -3714,12 +3808,11 @@ function updateWeather(dt, t){
     if(rp){
       // Anchor at cloud BASE — shift currentCenter radially inward by puff radius
       // so drops start from the bottom of the cloud, not the middle
-      const cloudBase = bs.currentCenter.clone()
-        .addScaledVector(bs.currentCenter.clone().normalize(), -0.28);
+      const up = _weatherUp.copy(bs.currentCenter).normalize();
+      const cloudBase = _weatherCloudBase.copy(bs.currentCenter).addScaledVector(up, -0.28);
       rp.position.copy(cloudBase);
       // Orient so local -Y points toward Earth (radially inward)
-      const up = bs.currentCenter.clone().normalize();
-      rp.quaternion.setFromUnitVectors(new THREE.Vector3(0,1,0), up);
+      rp.quaternion.setFromUnitVectors(_weatherYAxis, up);
 
       const posArr = rp.geometry.attributes.position.array;
       const drops  = rp.userData.dropPositions;
@@ -3829,10 +3922,10 @@ function updateWeather(dt, t){
     if(!sp) return;
 
     // Anchor at cloud base
-    const up        = bs.currentCenter.clone().normalize();
-    const cloudBase = bs.currentCenter.clone().addScaledVector(up, -0.28);
+    const up        = _weatherUp.copy(bs.currentCenter).normalize();
+    const cloudBase = _weatherCloudBase.copy(bs.currentCenter).addScaledVector(up, -0.28);
     sp.position.copy(cloudBase);
-    sp.quaternion.setFromUnitVectors(new THREE.Vector3(0,1,0), up);
+    sp.quaternion.setFromUnitVectors(_weatherYAxis, up);
 
     // Animate flakes
     const posArr = sp.geometry.attributes.position.array;
@@ -3993,8 +4086,13 @@ function updateClouds(t){
         }
 
       } else {
-        // Normal idle bob (Phase 1 behaviour)
-        const d=h.clone().normalize();
+        // Normal idle bob (Phase 1 behaviour). homeDir is precomputed once at
+        // creation (home's direction never actually changes — the scatter
+        // reset path restores the exact same original position) so this
+        // avoids a clone()+normalize() allocation for every idle puff/mist
+        // sprite, every frame (~1000+ of them), which was pure GC pressure
+        // for zero visual benefit.
+        const d=p.userData.homeDir || h.clone().normalize();
         p.position.copy(h).addScaledVector(d,Math.sin(t*0.18+gi*1.7+i*.37)*0.018);
       }
 
@@ -4518,11 +4616,11 @@ function makeEarth(){
         gl_FragColor=vec4(col,1.0);
       }`
   });
-  earth=new THREE.Mesh(new THREE.SphereBufferGeometry(earthR,320,160),earthMat);
+  earth=new THREE.Mesh(new THREE.SphereBufferGeometry(earthR,192,96),earthMat);
   scene.add(earth);
   // A very light specular water shell to make the scrolling ocean normals readable.
   const shellMat=new THREE.ShaderMaterial({transparent:true,depthWrite:false,uniforms:{time:{value:0},landMap:{value:land},shoreMap:{value:shore},lakeMap:{value:lakes},waveA:{value:waveA}},vertexShader:`varying vec2 vUv;void main(){vUv=uv;gl_Position=projectionMatrix*modelViewMatrix*vec4(position,1.0);}`,fragmentShader:`precision highp float;varying vec2 vUv;uniform float time;uniform sampler2D landMap,shoreMap,lakeMap,waveA;float L(vec3 c){return dot(c,vec3(.299,.587,.114));}void main(){float land=smoothstep(.34,.50,texture2D(landMap,vUv).r);float ocean=1.0-land;float lake=smoothstep(.10,.46,texture2D(lakeMap,vUv).r);float sh=texture2D(shoreMap,vUv).r;float w=L(texture2D(waveA,vUv*50.0+vec2(time*.02,0.)).rgb)*.5+L(texture2D(waveA,vUv*88.0+vec2(0.,time*.017)).rgb)*.5;float oceanA=ocean*(.006+.020*smoothstep(.10,.70,sh))*smoothstep(.62,.92,w);float lakeA=lake*(.014+.052*smoothstep(.50,.92,w));gl_FragColor=vec4(.62,.92,1.0,oceanA+lakeA);}`});
-  const shell=new THREE.Mesh(new THREE.SphereBufferGeometry(earthR+.018,256,128),shellMat);
+  const shell=new THREE.Mesh(new THREE.SphereBufferGeometry(earthR+.018,144,72),shellMat);
   shell.userData.isWaterShell=true; scene.add(shell);
 }
 
@@ -5390,7 +5488,7 @@ function makeShadow(){
   shadowLight=new THREE.DirectionalLight(0xffffff,0.001); // tiny intensity; real shadow comes from ShadowMaterial receiver
   shadowLight.castShadow=true;
   shadowLight.target=shadowTarget;
-  shadowLight.shadow.mapSize.set(2048,2048);
+  shadowLight.shadow.mapSize.set(1024,1024);
   shadowLight.shadow.camera.near=0.01;
   shadowLight.shadow.camera.far=8.0;
   shadowLight.shadow.camera.left=-2.2;
@@ -5554,6 +5652,8 @@ function addEvents(){
     if(e.code==='KeyR')      resetFlight();
     if(e.code==='KeyB')      toggleHudExtras();
     if(e.code==='KeyP')      toggleBorders();
+    if(e.code==='KeyL')      toggleShadows();
+    if(e.code==='KeyK')      toggleWeather();
     // ── Developer-only debug toggles — commented out for the upload/release
     // build since they have no player-facing purpose (V shows collision
     // hitbox wireframes, H shows an enemy-distance debug readout) and
@@ -5838,13 +5938,15 @@ function updateEnemyDragon(dt, t){
   }
 
   // ── AI: track player using shortest arc on sphere ─────────────────────
-  const playerPos = dragonRoot.position.clone().normalize(); // direction on sphere
-  const enemyPos  = eRadial.clone();
+  const playerPos = _eaiPlayerPos.copy(dragonRoot.position).normalize(); // direction on sphere
+  // enemyPos was previously a clone of eRadial — eRadial itself isn't
+  // mutated until further down (after this read), so it's safe to read
+  // directly with no copy needed here.
 
   // Shortest arc: rotate eForward toward player direction, projected to tangent plane
-  const toPlayer = playerPos.clone().addScaledVector(enemyPos, -playerPos.dot(enemyPos)).normalize();
+  const toPlayer = _eaiToPlayer.copy(playerPos).addScaledVector(eRadial, -playerPos.dot(eRadial)).normalize();
   const dotFwd   = eForward.dot(toPlayer);
-  const crossY   = new THREE.Vector3().crossVectors(eForward, toPlayer).dot(eRadial);
+  const crossY   = _eaiCross.crossVectors(eForward, toPlayer).dot(eRadial);
 
   // Turn rate — how fast enemy steers toward player
   const turnRate = 0.8 + eSpeed*4.0;
@@ -5870,9 +5972,9 @@ function updateEnemyDragon(dt, t){
   // has nothing to fire back with.
   let evadeRight = 0, evadeUp = 0;
   if(_playerAimedAtEnemy && !eIsFiring && enemyFireMeter <= 0){
-    const toEnemy = enemyRoot.position.clone().sub(_playerFireOrigin);
+    const toEnemy = _eaiToEnemy.copy(enemyRoot.position).sub(_playerFireOrigin);
     const alongAxis = toEnemy.dot(_playerFireDir);
-    const perp = toEnemy.clone().addScaledVector(_playerFireDir, -alongAxis); // component perpendicular to the beam
+    const perp = _eaiPerp.copy(toEnemy).addScaledVector(_playerFireDir, -alongAxis); // component perpendicular to the beam
     if(perp.lengthSq() < 1e-6){
       // Degenerate case: enemy is essentially dead-center on the beam axis,
       // with no defined perpendicular direction to push toward — pick a side
@@ -5909,10 +6011,10 @@ function updateEnemyDragon(dt, t){
   // ── Move forward at constant speed ────────────────────────────────────
   eRadial.addScaledVector(eForward, eSpeed*dt).normalize();
   eProjectForward();
-  enemyRoot.position.copy(eRadial.clone().multiplyScalar(earthR + eAltitude));
+  enemyRoot.position.copy(eRadial).multiplyScalar(earthR + eAltitude);
 
   // ── Orient enemy mesh ─────────────────────────────────────────────────
-  const em = new THREE.Matrix4().makeBasis(eRight.clone().negate(), eRadial, eForward);
+  const em = _eaiBasis.makeBasis(_eaiNegRight.copy(eRight).negate(), eRadial, eForward);
   enemyRoot.quaternion.setFromRotationMatrix(em);
 
   if(enemyMixer) enemyMixer.update(dt);
