@@ -387,7 +387,7 @@
        purpose since the en-route ramp + pulse update every frame from JS already. */
     filter:drop-shadow(0 3px 10px rgba(0,0,0,.55)) var(--orb-glow, drop-shadow(0 0 0 transparent));
   }
-  /* During the hidden 10-30s cooldown, #orbContent shows a generic countdown
+  /* During the hidden 5-15s cooldown, #orbContent shows a generic countdown
      with no country context (the target isn't even picked yet at this point —
      see showInvasionPopup()) — flag/name are hidden, only the timer remains,
      reusing the same element rather than adding new markup. */
@@ -1804,8 +1804,15 @@ function _invasionPickCountry(){
 function startInvasionCycle(){
   _invasionState='waiting';
   _invasionTimer=_randRange(INVASION_MIN_DELAY, INVASION_MAX_DELAY);
-  showOrbCooldown();
-  setOrbGlow('rgba(255,255,255,.85)',10); // steady white glow for the whole hidden cooldown — no ramp, just on
+  // Guarded specifically because this function can also fire from invasionOk()
+  // after a "fled to Explore mid-battle" forced Captured popup — that popup's
+  // OK button isn't gameMode-gated, so without this check the white cooldown
+  // orb would incorrectly reappear (and sit frozen, since updateInvasionEvent
+  // never ticks outside Defend mode) while the player is in Explore mode.
+  if(gameMode==='defend'){
+    showOrbCooldown();
+    setOrbGlow('rgba(255,255,255,.85)',10); // steady white glow for the whole hidden cooldown — no ramp, just on
+  }
 }
 
 function showInvasionPopup(){
@@ -1929,7 +1936,7 @@ function closeGuideAbout(){
 
 // ── Magic orb (bottom-left, mirrors the compass at bottom-right) ───────────
 // Shows different content depending on _invasionState:
-//   'waiting' (hidden 10-30s cooldown)  -> showOrbCooldown(): generic timer
+//   'waiting' (hidden 5-15s cooldown)  -> showOrbCooldown(): generic timer
 //      only, no flag/name yet since _invasionPickCountry() hasn't run.
 //   'enroute' (accepted, flying there)  -> showOrbContent(country): flag,
 //      country name, and the live mm:ss countdown.
@@ -2483,7 +2490,7 @@ let gameMode = 'explore';
 const ENEMY_VISIBLE_RADIUS = 7; // distance at which the enemy counts as "appeared" for the roar-on-appear trigger
 
 // ── Defend-mode "Under Attack" invasion event ──────────────────────────
-// Sequence: hidden random 10-30s timer -> popup (Accept/Decline) with a
+// Sequence: hidden random 5-15s timer -> popup (Accept/Decline) with a
 // random 1-2min countdown and a random country's flag -> if Accepted,
 // top-right HUD countdown runs while the existing countryAtRadial() check
 // (same one the country-name HUD already uses) watches for the player
@@ -2496,9 +2503,9 @@ const ENEMY_VISIBLE_RADIUS = 7; // distance at which the enemy counts as "appear
 // immediately as it used to; losing shows the same "Captured" popup as the
 // other fail cases (the player dragon itself still respawns as before via
 // resetFlight() — only the enemy/invasion side changed). Every popup's OK
-// re-arms a fresh random 10-30S hidden timer. Entirely inert outside
+// re-arms a fresh random 5-15S hidden timer. Entirely inert outside
 // Defend mode — see setGameMode() and updateInvasionEvent()'s mode guard.
-const INVASION_MIN_DELAY=10, INVASION_MAX_DELAY=30;     // 10-30 sec hidden delay
+const INVASION_MIN_DELAY=5, INVASION_MAX_DELAY=15;     // 5-15 sec hidden delay
 const INVASION_MIN_COUNTDOWN=60, INVASION_MAX_COUNTDOWN=120; // 1-2 min to reach country
 let _invasionState='idle'; // 'idle' | 'waiting' | 'popup' | 'enroute' | 'fighting' | 'captured' | 'liberated'
 let _invasionTimer=0;      // countdown to next state transition, in seconds
