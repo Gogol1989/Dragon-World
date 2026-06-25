@@ -377,7 +377,22 @@
       0 0 12px rgba(140,190,255,.32);
     border:1px solid rgba(210,228,255,.4);
   }
-  #orbRim{position:absolute;inset:0;width:100%;height:100%;object-fit:contain;filter:drop-shadow(0 3px 10px rgba(0,0,0,.55));z-index:2;}
+  #orbRim{
+    position:absolute;inset:0;width:100%;height:100%;object-fit:contain;z-index:2;
+    /* Base depth shadow is permanent; --orb-glow is a second drop-shadow layered
+       on top, driven entirely from JS (setOrbGlow()) — white during the hidden
+       cooldown, red-ramping-then-pulsing during an active en-route countdown,
+       and unset (transparent, zero radius) for every notification/fighting/idle
+       state. Two stacked drop-shadow() calls is valid CSS; no transition here on
+       purpose since the en-route ramp + pulse update every frame from JS already. */
+    filter:drop-shadow(0 3px 10px rgba(0,0,0,.55)) var(--orb-glow, drop-shadow(0 0 0 transparent));
+  }
+  /* During the hidden 10-30s cooldown, #orbContent shows a generic countdown
+     with no country context (the target isn't even picked yet at this point —
+     see showInvasionPopup()) — flag/name are hidden, only the timer remains,
+     reusing the same element rather than adding new markup. */
+  #orbContent.cooldown-mode #orbFlag,
+  #orbContent.cooldown-mode #orbCountry{display:none;}
   #orbContent{
     position:absolute; left:24%; top:27%; width:55%; height:48%; z-index:3;
     display:none; flex-direction:column; align-items:center; justify-content:center;
@@ -857,6 +872,7 @@ const ASSET = {
   sfxVictoryRoar:'./assets/victory_roar.mp3',
   sfxOkClick:'./assets/ok_click.mp3',
   sfxStart:'./assets/start.mp3',
+  sfxInvasionTick:'./assets/invasion_tick.mp3', // ~1s tick, looped once/sec for the final 10s of an en-route countdown — see setOrbGlow()/updateInvasionEvent()
   foamSplash:'./assets/foam_splash.png',
   rippleHeight:'./assets/ripple_height.png',
   splashDroplets:'./assets/splash_droplets.png',
@@ -1788,9 +1804,13 @@ function _invasionPickCountry(){
 function startInvasionCycle(){
   _invasionState='waiting';
   _invasionTimer=_randRange(INVASION_MIN_DELAY, INVASION_MAX_DELAY);
+  showOrbCooldown();
+  setOrbGlow('rgba(255,255,255,.85)',10); // steady white glow for the whole hidden cooldown — no ramp, just on
 }
 
 function showInvasionPopup(){
+  hideOrbContent();
+  setOrbGlow(null); // notification card is up — no orb glow while it's showing
   _invasionCountry=_invasionPickCountry();
   _invasionCountdownTotal=_randRange(INVASION_MIN_COUNTDOWN, INVASION_MAX_COUNTDOWN);
   _invasionTimer=_invasionCountdownTotal; // BUG FIX: this was never set here before, so it
@@ -1908,21 +1928,59 @@ function closeGuideAbout(){
 }
 
 // ── Magic orb (bottom-left, mirrors the compass at bottom-right) ───────────
-// Populated only while an accepted invasion is actively counting down
-// ('enroute' — see invasionAccept/updateInvasionEvent) — flag, country name,
-// and the live mm:ss countdown, stacked vertically inside the transparent
-// center of orb_rim.webp. Hidden again the moment the player reaches the
-// target (triggerInvasionSuccess), loses/declines/times out
-// (showInvasionCaptured), or leaves Defend mode (cancelInvasionEvent).
+// Shows different content depending on _invasionState:
+//   'waiting' (hidden 10-30s cooldown)  -> showOrbCooldown(): generic timer
+//      only, no flag/name yet since _invasionPickCountry() hasn't run.
+//   'enroute' (accepted, flying there)  -> showOrbContent(country): flag,
+//      country name, and the live mm:ss countdown.
+//   everything else (popup/fighting/idle/outcome screens) -> hidden via
+//      hideOrbContent(), called from showInvasionPopup, triggerInvasionSuccess,
+//      showInvasionCaptured, showInvasionLiberated, and cancelInvasionEvent.
+// The glow ring (white during 'waiting', red ramping->pulsing during the
+// final 10s of 'enroute') is fully independent of this show/hide — see
+// setOrbGlow() below — since #orbRim (the ring graphic) is always visible
+// regardless of state; only #orbContent (the flag/name/timer overlay) and the
+// glow itself toggle.
 function showOrbContent(country){
+  document.getElementById('orbContent').classList.remove('cooldown-mode'); // restore flag/name if 'waiting' had hidden them
   document.getElementById('orbFlag').src='assets/flags/'+country.iso+'.webp';
   const nameEl=document.getElementById('orbCountry');
   nameEl.textContent=country.n;
   nameEl.title=country.n;
   document.getElementById('orbContent').classList.add('show');
 }
+function showOrbCooldown(){
+  document.getElementById('orbContent').classList.add('cooldown-mode','show');
+}
 function hideOrbContent(){
-  document.getElementById('orbContent').classList.remove('show');
+  document.getElementById('orbContent').classList.remove('show','cooldown-mode');
+}
+
+// ── Orb glow ring ────────────────────────────────────────────────────────
+// Sets the second drop-shadow layer in #orbRim's filter (see CSS) via a
+// custom property, so JS never fights the element's permanent depth shadow.
+// color=null clears the glow entirely (transparent, zero radius) — used for
+// every popup/fighting/outcome/idle transition. radiusPx controls strength;
+// callers pass a literal px value, not a 0-1 fraction, so the per-frame
+// en-route ramp (see updateInvasionEvent) can compute it however it likes.
+function setOrbGlow(color,radiusPx){
+  const rim=document.getElementById('orbRim');
+  if(!color){ rim.style.setProperty('--orb-glow','drop-shadow(0 0 0 transparent)'); return; }
+  rim.style.setProperty('--orb-glow','drop-shadow(0 0 '+radiusPx+'px '+color+')');
+}
+
+// ── Invasion tick sound (final 10s of an en-route countdown) ──────────────
+// Lazy-created on first use, same pattern as _playerFireSound/_enemyFireSound
+// above. Restarting currentTime=0 before each play() lets it re-trigger
+// cleanly even if a prior ~1s play hasn't fully finished (e.g. if a frame
+// hitch causes two seconds to roll over close together).
+let _invasionTickSound=null;
+let _invasionTickLastSecond=null; // tracks which whole second we last played, so the per-frame
+                                   // 'enroute' branch triggers this once per second-rollover, not every frame
+function playInvasionTick(){
+  if(!_invasionTickSound){ _invasionTickSound=new Audio(ASSET.sfxInvasionTick); _invasionTickSound.volume=0.55; }
+  _invasionTickSound.currentTime=0;
+  _invasionTickSound.play().catch(()=>{}); // swallow autoplay-policy rejections, same as other one-shot SFX in this file
 }
 
 function invasionAccept(){
@@ -1933,6 +1991,8 @@ function invasionAccept(){
   _invasionState='enroute';
   _invasionTimer=_invasionCountdownTotal;
   showOrbContent(_invasionCountry);
+  setOrbGlow('rgba(255,40,30,.6)',2); // red glow starts faint; per-frame ramp in updateInvasionEvent takes it from here
+  _invasionTickLastSecond=null; // fresh countdown, fresh tick-tracking — see playInvasionTick()
   startBattleMusic(); // battle.mp3 fades in / combat.mp3 fades out, starting the instant Defend is clicked
 }
 
@@ -1949,6 +2009,7 @@ function invasionDecline(){
 // when _invasionState==='fighting').
 function showInvasionCaptured(){
   hideOrbContent();
+  setOrbGlow(null); // covers the en-route-timeout path specifically — losing/declining already cleared glow earlier (fighting/popup transitions), but a timeout reaches here straight from an active red-pulsing 'enroute' state
   // Captured this exact moment as 'wasFighting' before _invasionState gets
   // overwritten below — this function is shared by three different paths
   // (losing an active fight, declining outright, and timing out en route
@@ -1981,6 +2042,7 @@ function showInvasionCaptured(){
 // Winning the fight (see updateDeathAnimations' enemy-death branch, called
 // when _invasionState==='fighting'): shows the trophy alongside the flag.
 function showInvasionLiberated(){
+  setOrbGlow(null); // already cleared via triggerInvasionSuccess's fighting-state transition; redundant here on purpose, same defensive style as the rest of this state machine
   endBattleMusic(); // battle.mp3 fades out, combat.mp3 fades back in
   _invasionState='liberated';
   trackEvent('battle_won',{country:_invasionCountry.n});
@@ -2046,6 +2108,7 @@ function invasionOk(){
 // changed to route through here instead.
 function triggerInvasionSuccess(){
   hideOrbContent();
+  setOrbGlow(null); // fight is starting — no glow during the fighting state itself
   _invasionState='fighting';
   trackEvent('battle_started',{country:_invasionCountry.n});
   respawnEnemy(countryRadialDir(_invasionCountry));
@@ -2061,6 +2124,7 @@ function updateInvasionEvent(dt){
   if(gameMode!=='defend') return; // entirely inert outside Defend mode
   if(_invasionState==='waiting'){
     _invasionTimer-=dt;
+    document.getElementById('orbTimer').textContent=_invasionFormatTime(_invasionTimer); // generic cooldown number — see showOrbCooldown()
     if(_invasionTimer<=0) showInvasionPopup();
   } else if(_invasionState==='popup'){
     _invasionTimer-=dt; // countdown shown on the popup itself
@@ -2073,6 +2137,26 @@ function updateInvasionEvent(dt){
   } else if(_invasionState==='enroute'){
     _invasionTimer-=dt;
     document.getElementById('orbTimer').textContent=_invasionFormatTime(_invasionTimer);
+    // Red glow ramp: 0 at acceptance -> 1 as the clock hits zero, driving both
+    // the drop-shadow radius and its opacity so it reads as genuinely
+    // intensifying, not just a fixed red dot. Last 10s layers a multiplicative
+    // pulse (real-time sine, not game-time, so it stays smooth regardless of
+    // dt hitches) on top of wherever the ramp has already reached, plus the
+    // once-per-second tick sound — both gated by _invasionTickLastSecond so
+    // they fire on whole-second rollovers, not every single frame.
+    const pct=1-Math.max(0,_invasionTimer)/_invasionCountdownTotal;
+    let glowRadius=3+pct*15, glowOpacity=0.35+pct*0.5;
+    if(_invasionTimer<=10){
+      const pulseMult=1+0.4*Math.abs(Math.sin(performance.now()/220));
+      glowRadius*=pulseMult;
+      glowOpacity=Math.min(1,glowOpacity*pulseMult);
+      const wholeSecond=Math.ceil(_invasionTimer);
+      if(wholeSecond>0 && wholeSecond!==_invasionTickLastSecond){
+        _invasionTickLastSecond=wholeSecond;
+        playInvasionTick();
+      }
+    }
+    setOrbGlow('rgba(255,40,30,'+glowOpacity.toFixed(2)+')',glowRadius);
     if(_invasionTimer<=0){
       showInvasionCaptured();
     } else if(countryAtRadial(radial)===_invasionCountry){
@@ -2087,6 +2171,8 @@ function cancelInvasionEvent(){
   _invasionState='idle';
   document.getElementById('invasionPopup').style.display='none';
   hideOrbContent();
+  setOrbGlow(null); // safety net — covers leaving Defend mode mid-cooldown or mid-enroute, either of which could otherwise leave a stale glow active
+  _invasionTickLastSecond=null;
   clearConfetti();
 }
 
@@ -2410,7 +2496,7 @@ const ENEMY_VISIBLE_RADIUS = 7; // distance at which the enemy counts as "appear
 // immediately as it used to; losing shows the same "Captured" popup as the
 // other fail cases (the player dragon itself still respawns as before via
 // resetFlight() — only the enemy/invasion side changed). Every popup's OK
-// re-arms a fresh random 10-30s hidden timer. Entirely inert outside
+// re-arms a fresh random 10-30S hidden timer. Entirely inert outside
 // Defend mode — see setGameMode() and updateInvasionEvent()'s mode guard.
 const INVASION_MIN_DELAY=10, INVASION_MAX_DELAY=30;     // 10-30 sec hidden delay
 const INVASION_MIN_COUNTDOWN=60, INVASION_MAX_COUNTDOWN=120; // 1-2 min to reach country
