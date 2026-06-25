@@ -410,6 +410,38 @@
     text-shadow:0 1px 3px rgba(0,0,0,.9),0 0 8px rgba(255,170,40,.32);letter-spacing:.4px;flex:0 0 auto;
   }
 
+  /* ── First-time-player hints — see hintSeen()/requestContextHint() ──── */
+  #moveHintCluster{
+    position:fixed;left:50%;bottom:18px;transform:translateX(-50%);z-index:4;
+    display:none;gap:8px;pointer-events:none;
+  }
+  .move-hint{
+    background:rgba(10,14,24,.62);border:1px solid rgba(255,215,106,.55);border-radius:14px;
+    padding:5px 11px;font-family:'Cinzel',Georgia,serif;font-weight:600;
+    font-size:clamp(10px,1.3vw,12px);color:#ffd76a;text-shadow:0 1px 2px rgba(0,0,0,.85);
+    white-space:nowrap;transition:opacity .4s ease;
+  }
+  .move-hint.faded{opacity:0;}
+  #contextHint{
+    position:fixed;z-index:6;pointer-events:none;opacity:0;transition:opacity .35s ease;
+    background:rgba(10,14,24,.85);border:1px solid rgba(255,215,106,.7);border-radius:8px;
+    padding:7px 12px;max-width:220px;text-align:center;
+  }
+  #contextHint.show{opacity:1;}
+  #contextHintText{
+    font-family:'Cinzel',Georgia,serif;font-weight:600;font-size:clamp(10px,1.3vw,12px);
+    color:#ffd76a;text-shadow:0 1px 2px rgba(0,0,0,.85);
+  }
+  #contextHintArrow{
+    position:absolute;left:50%;bottom:-7px;transform:translateX(-50%);width:0;height:0;
+    border-left:7px solid transparent;border-right:7px solid transparent;
+    border-top:7px solid rgba(255,215,106,.7);
+  }
+  #contextHintArrow.no-anchor{display:none;}
+  #contextHintArrow.point-up{
+    bottom:auto;top:-7px;border-top:none;border-bottom:7px solid rgba(255,215,106,.7);
+  }
+
   /* ── "Legacy-style" popup family — a shared look (legacy_frame.webp portrait
      scroll-frame + Cinzel Decorative title + scrollable body + OK button)
      used by the Legacy popup AND the Guide sub-popups (Gameplay Basics,
@@ -648,6 +680,23 @@
 </div>
 <div id="cloudFog"></div>
 <div id="lightningFlash"></div>
+<!-- ── First-time-player hints ───────────────────────────────────────────
+     moveHintCluster: shown once at launch, four chips, each fades
+     independently the moment that exact input is detected (see the
+     keydown/mousemove handlers) — see hintSeen()/dismissMoveHint().
+     contextHint: one reusable anchored callout, shared by the four
+     "moment" hints (Defend nudge / orb glow / fire breath / health regen),
+     queued one-at-a-time — see requestContextHint(). -->
+<div id="moveHintCluster">
+  <div class="move-hint" id="moveHintUD">↑↓ Speed</div>
+  <div class="move-hint" id="moveHintLR">←→ Turn</div>
+  <div class="move-hint" id="moveHintWS">W/S Altitude</div>
+  <div class="move-hint" id="moveHintMouse">Mouse: Look</div>
+</div>
+<div id="contextHint">
+  <div id="contextHintText"></div>
+  <div id="contextHintArrow"></div>
+</div>
 <!-- ── Defend-mode "Under Attack" invasion event UI ─────────────────────── -->
 <div id="invasionPopup">
   <div id="invasionFrame">
@@ -1812,6 +1861,7 @@ function startInvasionCycle(){
   if(gameMode==='defend'){
     showOrbCooldown();
     setOrbGlow('rgba(255,255,255,.85)',10); // steady white glow for the whole hidden cooldown — no ramp, just on
+    requestContextHint('orbGlow','The orb glows when a threat is approaching','orbWrap',6000,()=>_invasionState!=='waiting');
   }
 }
 
@@ -1990,6 +2040,112 @@ function playInvasionTick(){
   _invasionTickSound.play().catch(()=>{}); // swallow autoplay-policy rejections, same as other one-shot SFX in this file
 }
 
+// ── First-time-player hints ─────────────────────────────────────────────
+// Each hint shows at most once per browser ever (localStorage-gated), never
+// blocks input, and resolves either the moment its relevant action happens
+// or after a few seconds, whichever comes first. Two independent systems:
+//   - moveHintCluster: four chips shown together at launch, each fading on
+//     its own the instant that exact input is detected.
+//   - contextHint: one reusable anchored callout shared by the four
+//     "moment" hints (Defend nudge / orb glow / fire breath / health
+//     regen), queued one-at-a-time via requestContextHint().
+function hintSeen(key){
+  try{ return localStorage.getItem('dwHint_'+key)==='1'; }
+  catch(e){ return false; } // privacy-mode/blocked storage just means a hint may reshow next session — harmless, never throws
+}
+function markHintSeen(key){
+  try{ localStorage.setItem('dwHint_'+key,'1'); }catch(e){}
+}
+
+// ── Movement/camera hint cluster ────────────────────────────────────────
+const MOVE_HINT_IDS=['moveHintUD','moveHintLR','moveHintWS','moveHintMouse'];
+function initMoveHints(){
+  if(hintSeen('movement')) return;
+  document.getElementById('moveHintCluster').style.display='flex';
+}
+function dismissMoveHint(id){
+  const el=document.getElementById(id);
+  if(!el || el.classList.contains('faded')) return;
+  el.classList.add('faded');
+  if(MOVE_HINT_IDS.every(i=>document.getElementById(i).classList.contains('faded'))){
+    markHintSeen('movement'); // all four used at least once — never show this cluster again
+  }
+}
+
+// ── Contextual "moment" hint queue ──────────────────────────────────────
+let _hintQueue=[];
+let _hintActiveKey=null;
+let _hintResolveCheck=null;
+let _hintFadeTimer=null;
+function requestContextHint(key,text,anchorElId,autoFadeMs,resolveCheckFn,placement){
+  if(hintSeen(key)) return;
+  if(_hintActiveKey===key || _hintQueue.some(h=>h.key===key)) return;
+  _hintQueue.push({key,text,anchorElId,autoFadeMs,resolveCheckFn,placement:placement||'above'});
+  if(!_hintActiveKey) _advanceHintQueue();
+}
+function _advanceHintQueue(){
+  if(_hintQueue.length===0){ _hintActiveKey=null; _hintResolveCheck=null; return; }
+  const h=_hintQueue.shift();
+  _hintActiveKey=h.key;
+  _hintResolveCheck=h.resolveCheckFn;
+  const hintEl=document.getElementById('contextHint');
+  const arrowEl=document.getElementById('contextHintArrow');
+  document.getElementById('contextHintText').textContent=h.text;
+  if(h.anchorElId){
+    const anchor=document.getElementById(h.anchorElId);
+    const r=anchor.getBoundingClientRect();
+    const anchorCenterX=r.left+r.width/2;
+    const below=h.placement==='below'; // e.g. the Defend nudge — its anchor sits only 12px from the top of the screen, so placing it "above" (the default) would render entirely off-screen
+    arrowEl.classList.toggle('point-up',below);
+    hintEl.style.top = below ? (r.bottom+12)+'px' : (r.top-12)+'px';
+    hintEl.style.transform = below ? 'translateY(0)' : 'translateY(-100%)';
+    hintEl.style.left='0px'; // settle at 0 first so offsetWidth below reflects only its own content/max-width, not a stale prior position
+    const boxWidth=hintEl.offsetWidth;
+    const margin=8;
+    const boxLeft=Math.max(margin,Math.min(anchorCenterX-boxWidth/2,window.innerWidth-boxWidth-margin));
+    hintEl.style.left=boxLeft+'px';
+    // Keep the pointer arrow visually aimed at the real anchor center even
+    // when the box had to shift to avoid going off-screen (e.g. the orb,
+    // hard against the left edge) — clamped so the triangle itself never
+    // renders outside the box's own bounds.
+    const arrowLeft=Math.max(12,Math.min(anchorCenterX-boxLeft,boxWidth-12));
+    arrowEl.style.left=arrowLeft+'px';
+    arrowEl.style.transform='translateX(-50%)';
+    arrowEl.classList.remove('no-anchor');
+  } else {
+    // No stable on-screen anchor (e.g. health-regen — the HP bar floats in
+    // world space above the moving dragon, not a fixed HUD element) — show
+    // as a plain centered callout near the top instead, no pointer tail.
+    hintEl.style.left='50%'; hintEl.style.top='90px'; hintEl.style.transform='translate(-50%,0)';
+    arrowEl.classList.remove('point-up');
+    arrowEl.classList.add('no-anchor');
+  }
+  hintEl.classList.add('show');
+  clearTimeout(_hintFadeTimer);
+  _hintFadeTimer=setTimeout(()=>_resolveActiveHint(h.key),h.autoFadeMs);
+}
+function _resolveActiveHint(key){
+  if(_hintActiveKey!==key) return; // already resolved/superseded — avoids a stray timer firing twice
+  markHintSeen(key);
+  document.getElementById('contextHint').classList.remove('show');
+  clearTimeout(_hintFadeTimer);
+  _hintActiveKey=null; _hintResolveCheck=null;
+  setTimeout(_advanceHintQueue,400); // let the fade-out finish before the next queued hint pops in
+}
+// Lightweight independent poller — deliberately NOT folded into animate()'s
+// per-frame loop, since none of these checks are remotely time-critical.
+// Also where the health-regen hint's trigger condition itself gets checked
+// (the other three hints are requested directly from their own game-logic
+// call sites instead, since those have an obvious one-time trigger moment).
+setInterval(()=>{
+  if(_hintActiveKey && _hintResolveCheck && _hintResolveCheck()){
+    _resolveActiveHint(_hintActiveKey);
+  }
+  if(gameMode==='explore' && playerHP<40 && !hintSeen('healthRegen')){
+    requestContextHint('healthRegen',"Keep flying: your dragon's health regenerates over time",null,6000,()=>playerHP>70);
+  }
+},200);
+
 function invasionAccept(){
   if(_invasionState!=='popup') return;
   playOkClick();
@@ -2121,6 +2277,7 @@ function triggerInvasionSuccess(){
   respawnEnemy(countryRadialDir(_invasionCountry));
   if(enemyVisual) enemyVisual.visible = true;
   status('The enemy has arrived to defend '+_invasionCountry.n+'!');
+  requestContextHint('fireBreath','Press Space to breathe fire!',null,6000,()=>keys.space===true);
 }
 
 // Per-frame driver, called from animate() alongside updateCountryHud (which
@@ -5771,12 +5928,12 @@ function addEvents(){
   canvas.addEventListener('contextmenu', e=>e.preventDefault());
   addEventListener('resize',()=>{camera.aspect=innerWidth/innerHeight;camera.updateProjectionMatrix();renderer.setSize(innerWidth,innerHeight);});
   addEventListener('keydown',e=>{
-    if(e.code==='ArrowUp')   keys.up=true;
-    if(e.code==='ArrowDown') keys.down=true;
-    if(e.code==='ArrowLeft') keys.left=true;
-    if(e.code==='ArrowRight')keys.right=true;
-    if(e.code==='KeyW')      keys.w=true;
-    if(e.code==='KeyS')      keys.s=true;
+    if(e.code==='ArrowUp'){   keys.up=true;    dismissMoveHint('moveHintUD'); }
+    if(e.code==='ArrowDown'){ keys.down=true;  dismissMoveHint('moveHintUD'); }
+    if(e.code==='ArrowLeft'){ keys.left=true;  dismissMoveHint('moveHintLR'); }
+    if(e.code==='ArrowRight'){keys.right=true; dismissMoveHint('moveHintLR'); }
+    if(e.code==='KeyW'){      keys.w=true;     dismissMoveHint('moveHintWS'); }
+    if(e.code==='KeyS'){      keys.s=true;     dismissMoveHint('moveHintWS'); }
     if(e.code==='KeyR')      resetFlight();
     if(e.code==='KeyB')      toggleHudExtras();
     if(e.code==='KeyP')      toggleBorders();
@@ -5830,6 +5987,7 @@ function addEvents(){
     if(e.button===0){ keys.space=false; }
   });
   addEventListener('mousemove',e=>{
+    dismissMoveHint('moveHintMouse');
     const dx=e.clientX-mx, dy=e.clientY-my;
     mx=e.clientX; my=e.clientY;
 
@@ -6602,6 +6760,10 @@ document.getElementById('go').onclick=()=>{
     document.getElementById('hud').style.display='flex';
     document.getElementById('countryDisplay').style.display='flex';
     playMusic();
+    initMoveHints();
+    setTimeout(()=>{
+      if(gameMode!=='defend') requestContextHint('defendNudge','Switch to Defend mode to protect nations!','gameModeHud',7000,()=>gameMode==='defend','below');
+    },4000);
   };
   LOAD_MANAGER.onLoad=enterGame;
   LOAD_MANAGER.onProgress=(url,itemsLoaded,itemsTotal)=>{
