@@ -2397,7 +2397,7 @@ let gameMode = 'explore';
 const ENEMY_VISIBLE_RADIUS = 7; // distance at which the enemy counts as "appeared" for the roar-on-appear trigger
 
 // ── Defend-mode "Under Attack" invasion event ──────────────────────────
-// Sequence: hidden random 1-2min timer -> popup (Accept/Decline) with a
+// Sequence: hidden random 10-30s timer -> popup (Accept/Decline) with a
 // random 1-2min countdown and a random country's flag -> if Accepted,
 // top-right HUD countdown runs while the existing countryAtRadial() check
 // (same one the country-name HUD already uses) watches for the player
@@ -2410,9 +2410,9 @@ const ENEMY_VISIBLE_RADIUS = 7; // distance at which the enemy counts as "appear
 // immediately as it used to; losing shows the same "Captured" popup as the
 // other fail cases (the player dragon itself still respawns as before via
 // resetFlight() — only the enemy/invasion side changed). Every popup's OK
-// re-arms a fresh random 1-2min hidden timer. Entirely inert outside
+// re-arms a fresh random 10-30s hidden timer. Entirely inert outside
 // Defend mode — see setGameMode() and updateInvasionEvent()'s mode guard.
-const INVASION_MIN_DELAY=20, INVASION_MAX_DELAY=120;     // 1-2 min hidden delay
+const INVASION_MIN_DELAY=10, INVASION_MAX_DELAY=30;     // 10-30 sec hidden delay
 const INVASION_MIN_COUNTDOWN=60, INVASION_MAX_COUNTDOWN=120; // 1-2 min to reach country
 let _invasionState='idle'; // 'idle' | 'waiting' | 'popup' | 'enroute' | 'fighting' | 'captured' | 'liberated'
 let _invasionTimer=0;      // countdown to next state transition, in seconds
