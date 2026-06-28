@@ -1562,6 +1562,15 @@
     document.getElementById('faceoffChoiceView').style.display = view==='choice' ? 'flex' : 'none';
     document.getElementById('faceoffJoinView').style.display   = view==='join'   ? 'flex' : 'none';
     document.getElementById('faceoffRoomView').style.display   = view==='room'   ? 'flex' : 'none';
+    // Auto-focus the moment this view appears — closes a real gap the
+    // keydown guard alone can't: that guard only suppresses shortcuts
+    // while an input ALREADY has focus, but nothing here previously gave
+    // it focus until the player manually clicked into the box first. If
+    // they started typing a room code immediately after clicking Join,
+    // before ever clicking the input itself, those keystrokes (including
+    // any F) would land on the page, not the field — exactly the bug this
+    // closes, by making the field already focused before typing realistically begins.
+    if(view==='join') document.getElementById('faceoffJoinInput').focus();
   }
 
   window.faceoffShowLobby = function(){
@@ -2162,6 +2171,13 @@
   document.getElementById('faceoffJoinBtn').onclick       = ()=>_showFaceoffView('join');
   document.getElementById('faceoffJoinBackBtn').onclick   = ()=>_showFaceoffView('choice');
   document.getElementById('faceoffJoinSubmitBtn').onclick = window.faceoffJoinRoom;
+  // Enter submits the same way clicking Join does — faceoffJoinRoom
+  // already validates the code itself (wrong length, room not found, room
+  // full), so this is safe to call as-is regardless of what's currently
+  // typed, same as a real click would be.
+  document.getElementById('faceoffJoinInput').addEventListener('keydown', (e)=>{
+    if(e.key==='Enter') window.faceoffJoinRoom();
+  });
   document.getElementById('faceoffReadyBtn').onclick      = window.faceoffToggleReady;
 </script>
 <script>
