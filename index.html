@@ -869,6 +869,7 @@
         </div>
       </div>
       <div class="hud-dropdown" id="helpDropdown">
+        <div class="hud-dropdown-item" id="guideAccountItem">Sign-in</div>
         <div class="hud-dropdown-item" id="guideGameplayItem">Gameplay Basics</div>
         <div class="hud-dropdown-item" id="guideSettingsItem">Settings</div>
         <div class="hud-dropdown-item" id="guideAboutItem">About</div>
@@ -954,14 +955,18 @@
   </div>
 </div>
 <!-- ── Face-off sign-in popup — same notif-style shell as the invasion
-     popup above, simplified content. Not yet wired to any UI trigger (the
-     Face-off mode entry point doesn't exist yet — step 5+ in the roadmap);
-     for now, test via console: showSignInPopup() -->
+     popup above. Doubles as the account-management dialog reached from the
+     Guide dropdown's new top row — same shell, different button set shown
+     depending on context (see showSignInPopup's context argument): the
+     fresh Guest/Google choice when reached by pressing F with no identity
+     chosen yet, or the upgrade/sign-out/back set when reached from the
+     Guide menu to check or change an already-existing identity. Test via
+     console: showSignInPopup('lobby') or showSignInPopup('manage') -->
 <div id="signInPopup" class="notif-style-popup">
   <div id="signInFrame" class="notif-style-frame">
     <div id="signInCard" class="notif-style-card">
-      <h2 class="notif-style-title">Sign-in</h2>
-      <div id="signInButtons" class="notif-style-buttons">
+      <h2 class="notif-style-title" id="signInTitle">Sign-in</h2>
+      <div id="signInButtonsFresh" class="notif-style-buttons">
         <button id="signInGuestBtn">Guest</button>
         <button id="signInGoogleBtn">
           <svg viewBox="0 0 18 18" xmlns="http://www.w3.org/2000/svg">
@@ -972,6 +977,11 @@
           </svg>
           Google
         </button>
+      </div>
+      <div id="signInButtonsManage" class="notif-style-buttons" style="display:none">
+        <button id="signInUpgradeBtn">Sign in with Google</button>
+        <button id="signOutBtn">Sign Out</button>
+        <button id="signInBackBtn">Back</button>
       </div>
     </div>
   </div>
@@ -1261,7 +1271,7 @@
 <script type="module">
   import { initializeApp } from "https://www.gstatic.com/firebasejs/12.15.0/firebase-app.js";
   import {
-    getAuth, signInAnonymously, GoogleAuthProvider, signInWithPopup, signInWithRedirect, getRedirectResult, linkWithPopup, linkWithRedirect, onAuthStateChanged
+    getAuth, signInAnonymously, GoogleAuthProvider, signInWithPopup, signInWithRedirect, getRedirectResult, linkWithPopup, linkWithRedirect, signOut, onAuthStateChanged
   } from "https://www.gstatic.com/firebasejs/12.15.0/firebase-auth.js";
   import {
     getFirestore, doc, setDoc, getDoc, updateDoc, deleteDoc, onSnapshot, serverTimestamp, runTransaction, arrayUnion
@@ -1300,6 +1310,7 @@
   window.faceoffUser = null;
   onAuthStateChanged(auth, (user)=>{
     window.faceoffUser = user;
+    if(window._updateAccountMenuLabel) window._updateAccountMenuLabel();
     if(user){
       console.log('[Face-off] session ready:', user.isAnonymous ? 'guest' : user.displayName, user.uid);
       _loadPlayerProgress(user.uid);
@@ -1312,13 +1323,22 @@
 
   // Shared success handler for every path that can produce a signed-in
   // Google user — popup, redirect, a plain sign-in, or a successful link.
-  // Keeps the "mark as chosen, hide the popup, show the lobby" steps in
-  // one place rather than repeated at every call site below.
+  // Keeps the "mark as chosen, hide the popup" steps in one place rather
+  // than repeated at every call site below. Whether this ALSO opens the
+  // lobby depends on why the popup was opened in the first place — see
+  // showSignInPopup's context argument (classic script) — backed by
+  // localStorage rather than a plain variable specifically because the
+  // redirect path navigates the whole page away and back, which would
+  // wipe anything held in memory.
   function _onGoogleSignInSuccess(user, via){
     console.log('[Face-off] signed in with Google ('+via+'):', user.displayName, user.uid);
     localStorage.setItem('faceoffHasChosenIdentity','1');
     hideSignInPopup();
-    window.faceoffShowLobby();
+    if(window._updateAccountMenuLabel) window._updateAccountMenuLabel();
+    if(localStorage.getItem('faceoffPendingLobbyOpen')){
+      localStorage.removeItem('faceoffPendingLobbyOpen');
+      window.faceoffShowLobby();
+    }
   }
 
   // Picks the sign-in flow back up after a redirect-based Google sign-in
@@ -1400,9 +1420,33 @@
       console.log('[Face-off] signed in as guest:', result.user.uid);
       localStorage.setItem('faceoffHasChosenIdentity','1'); // marks "explicitly chose Guest" — see the entry gate in setGameMode, which otherwise can't tell this apart from the silent background identity every visitor now gets at load
       hideSignInPopup();
-      window.faceoffShowLobby(); // this popup's only caller is the Face-off entry flow — signing in always means "show the lobby next"
+      if(window._updateAccountMenuLabel) window._updateAccountMenuLabel();
+      if(localStorage.getItem('faceoffPendingLobbyOpen')){
+        localStorage.removeItem('faceoffPendingLobbyOpen');
+        window.faceoffShowLobby();
+      }
     }catch(e){
       console.error('[Face-off] guest sign-in failed:', e);
+    }
+  };
+
+  // Signs out entirely — afterward, the existing onAuthStateChanged
+  // listener above sees no user and automatically assigns a brand new
+  // silent anonymous identity, same as any first-time visitor. Clears the
+  // "explicitly chosen" marker too: that fresh identity hasn't actually
+  // been chosen by anyone yet, so the Guide-menu label should read
+  // "Sign-in" again rather than misleadingly carrying "Guest" over from
+  // before. Leaving any active room first, and respecting the mid-race
+  // quit-confirm if one's genuinely in progress, is handled by the
+  // classic-script click handler that calls this — see signOutBtn's
+  // onclick — never here, since this bridge has no concept of game mode.
+  window.faceoffSignOut = async function(){
+    try{
+      await signOut(auth);
+      localStorage.removeItem('faceoffHasChosenIdentity');
+      console.log('[Face-off] signed out.');
+    }catch(e){
+      console.error('[Face-off] sign out failed:', e);
     }
   };
 
@@ -3079,7 +3123,7 @@ function setGameMode(mode){
     // that produces one.
     const hasChosenIdentity = window.faceoffUser && (!window.faceoffUser.isAnonymous || localStorage.getItem('faceoffHasChosenIdentity'));
     if(!hasChosenIdentity){
-      showSignInPopup();
+      showSignInPopup('lobby');
     } else if(window.faceoffShowLobby){
       window.faceoffShowLobby();
     }
@@ -4219,16 +4263,98 @@ function stopRaceMusic(){
   if(_faceoffRaceSound){ _faceoffRaceSound.pause(); _faceoffRaceSound.currentTime=0; }
 }
 
-function showSignInPopup(){ document.getElementById('signInPopup').style.display='flex'; }
+// True once a sign-out has been requested but a race is genuinely active —
+// see signOutBtn's onclick below. Checked by the quit-confirm's Yes
+// handler so confirming "leave the match" can also finish the sign-out
+// that was actually requested, rather than the player having to repeat
+// the Sign Out click after leaving.
+let _faceoffPendingSignOut = false;
+
+// context: 'lobby' (pressing F with no identity chosen yet — only ever
+// shows the fresh Guest/Google choice) or 'manage' (opened from the Guide
+// dropdown's account row, to check or change an existing identity — shows
+// "upgrade to Google" for a Guest, or Sign Out for an already-Google
+// identity, plus Back either way). 'lobby' sets a localStorage flag
+// marking "finishing sign-in should auto-open the lobby" — backed by
+// localStorage rather than a plain variable specifically because the
+// redirect fallback (see signInWithGoogle in the module script) navigates
+// the whole page away and back, which would wipe a normal variable;
+// 'manage' explicitly clears it, since checking your account should never
+// unexpectedly drop you into a lobby you weren't trying to open.
+function showSignInPopup(context){
+  const freshRow = document.getElementById('signInButtonsFresh');
+  const manageRow = document.getElementById('signInButtonsManage');
+  const title = document.getElementById('signInTitle');
+  if(context==='manage'){
+    localStorage.removeItem('faceoffPendingLobbyOpen');
+    freshRow.style.display='none';
+    manageRow.style.display='flex';
+    const isAnon = window.faceoffUser && window.faceoffUser.isAnonymous;
+    document.getElementById('signInUpgradeBtn').style.display = isAnon ? '' : 'none';
+    document.getElementById('signOutBtn').style.display = isAnon ? 'none' : '';
+    title.textContent = isAnon ? 'Playing as Guest' : ('Signed in as '+((window.faceoffUser&&window.faceoffUser.displayName)||'Player'));
+  } else {
+    localStorage.setItem('faceoffPendingLobbyOpen','1');
+    freshRow.style.display='flex';
+    manageRow.style.display='none';
+    title.textContent = 'Sign-in';
+  }
+  document.getElementById('signInPopup').style.display='flex';
+}
+function hideSignInPopup(){ document.getElementById('signInPopup').style.display='none'; }
+
+// Drives the Guide dropdown's top row — reflects the SAME three states
+// the entry gate and the popup above already check: no user yet (brief,
+// at load), the silent/Guest anonymous identity (split by whether it's
+// ever been explicitly chosen), or an actual Google identity. Called from
+// the module script after every auth-relevant event (silent sign-in
+// resolving, every sign-in success path, sign-out) rather than relying on
+// onAuthStateChanged alone, since linking specifically isn't guaranteed
+// to refire it (the uid never changes during a link, by design).
+function _updateAccountMenuLabel(){
+  const el = document.getElementById('guideAccountItem');
+  if(!el) return;
+  const user = window.faceoffUser;
+  if(!user){ el.textContent='Sign-in'; return; }
+  if(!user.isAnonymous){ el.textContent = user.displayName||'Player'; return; }
+  el.textContent = localStorage.getItem('faceoffHasChosenIdentity') ? 'Guest' : 'Sign-in';
+}
+
+document.getElementById('guideAccountItem').onclick = function(){ showSignInPopup('manage'); };
+document.getElementById('signInUpgradeBtn').onclick = function(){ if(window.signInWithGoogle) window.signInWithGoogle(); };
+document.getElementById('signInBackBtn').onclick = function(){
+  localStorage.removeItem('faceoffPendingLobbyOpen');
+  hideSignInPopup();
+};
+// Leaves any active room first (cleanly, via the exact same path as
+// pressing F/clicking Leave would) before actually signing out — a room
+// still listing the old uid as host/guest after signing out would just
+// get silently rejected by the security rules from then on. Respects the
+// mid-race quit-confirm exactly like any other way of leaving mid-race
+// does, rather than letting Sign Out become a way to bypass it.
+document.getElementById('signOutBtn').onclick = function(){
+  hideSignInPopup();
+  if(gameMode==='faceoff' && _faceoffRaceActive){
+    _faceoffPendingSignOut = true;
+    showFaceoffQuitConfirm();
+  } else {
+    if(gameMode==='faceoff') setGameMode('explore');
+    if(window.faceoffSignOut) window.faceoffSignOut();
+  }
+};
+
 function showFaceoffQuitConfirm(){ document.getElementById('faceoffQuitPopup').style.display='flex'; }
 function hideFaceoffQuitConfirm(){ document.getElementById('faceoffQuitPopup').style.display='none'; }
 document.getElementById('faceoffQuitYesBtn').onclick=()=>{
   hideFaceoffQuitConfirm();
   _faceoffRaceActive=false; // abandoning the race
   setGameMode('explore');
+  if(_faceoffPendingSignOut){
+    _faceoffPendingSignOut = false;
+    if(window.faceoffSignOut) window.faceoffSignOut();
+  }
 };
 document.getElementById('faceoffQuitNoBtn').onclick=hideFaceoffQuitConfirm;
-function hideSignInPopup(){ document.getElementById('signInPopup').style.display='none'; }
 
 function invasionAccept(){
   if(_invasionState!=='popup') return;
