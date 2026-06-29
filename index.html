@@ -3478,6 +3478,7 @@ let _faceoffUnlockedIsos = new Set(BASE_COUNTRY_ISOS);
 // document yet for a brand new anonymous identity) or, worse, silently
 // mix two different people's countries together once a document does load.
 window.faceoffResetProgressState = function(){
+  console.log('[Face-off] identity switch detected — clearing in-memory Chronicle/unlock state');
   _chronicle.liberatedTotal = 0;
   _chronicle.lostTotal = 0;
   _chronicle.liberatedByIso = {};
