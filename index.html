@@ -1398,29 +1398,69 @@
   // entry can never clobber any other country's already-stored entry —
   // unambiguous regardless of whatever merge semantics a plain nested
   // object literal might otherwise have.
+  // updateDoc (not setDoc+merge) is the one that actually interprets a
+  // dotted key like 'liberatedByIso.ng.n' as a nested PATH, building real
+  // structure {liberatedByIso:{ng:{n:...}}}. setDoc with merge:true does
+  // NOT do this — it was creating a literal flat field genuinely NAMED
+  // "liberatedByIso.ng.n", sitting beside liberatedTotal as its own
+  // unrelated top-level key, which is exactly why liberatedByIso itself
+  // was always undefined on every read despite the scalar fields working
+  // fine — confirmed directly against the actual stored document, not
+  // assumed. updateDoc throws 'not-found' if the document doesn't exist
+  // at all yet, though — which is exactly true for a brand new player's
+  // very first liberation/loss ever — so that specific case falls back to
+  // setDoc with a genuinely nested object literal, safe ONLY here because
+  // there's nothing else in a brand new document to accidentally clobber;
+  // every write after this one goes through updateDoc above, which
+  // targets just the one leaf path being touched.
   window.faceoffSyncLiberated = async function(iso, name, count, total, longestStreak){
     if(!window.faceoffUser) return; // shouldn't normally happen — silent sign-in resolves almost immediately at load — but don't throw if it somehow does
+    const ref = doc(db,'playerProgress',window.faceoffUser.uid);
     try{
-      await setDoc(doc(db,'playerProgress',window.faceoffUser.uid), {
+      await updateDoc(ref, {
         ['liberatedByIso.'+iso+'.n']: name,
         ['liberatedByIso.'+iso+'.count']: count,
         liberatedTotal: total,
         longestStreak: longestStreak
-      }, {merge:true});
+      });
     }catch(e){
-      console.error('[Face-off] failed to sync liberated country:', e);
+      if(e.code==='not-found'){
+        try{
+          await setDoc(ref, {
+            liberatedByIso: { [iso]: { n: name, count: count } },
+            liberatedTotal: total,
+            longestStreak: longestStreak
+          }, {merge:true});
+        }catch(e2){
+          console.error('[Face-off] failed to create progress doc (liberated):', e2);
+        }
+      } else {
+        console.error('[Face-off] failed to sync liberated country:', e);
+      }
     }
   };
   window.faceoffSyncLost = async function(iso, name, count, total){
     if(!window.faceoffUser) return;
+    const ref = doc(db,'playerProgress',window.faceoffUser.uid);
     try{
-      await setDoc(doc(db,'playerProgress',window.faceoffUser.uid), {
+      await updateDoc(ref, {
         ['lostByIso.'+iso+'.n']: name,
         ['lostByIso.'+iso+'.count']: count,
         lostTotal: total
-      }, {merge:true});
+      });
     }catch(e){
-      console.error('[Face-off] failed to sync lost country:', e);
+      if(e.code==='not-found'){
+        try{
+          await setDoc(ref, {
+            lostByIso: { [iso]: { n: name, count: count } },
+            lostTotal: total
+          }, {merge:true});
+        }catch(e2){
+          console.error('[Face-off] failed to create progress doc (lost):', e2);
+        }
+      } else {
+        console.error('[Face-off] failed to sync lost country:', e);
+      }
     }
   };
 
