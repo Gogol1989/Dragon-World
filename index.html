@@ -3430,7 +3430,15 @@ function _chronicleTally(map, country){
   map[country.iso]=cur;
 }
 function chronicleRecordLiberated(country){
-  const isNewUnlock = !_chronicle.liberatedByIso[country.iso]; // wasn't in the map at all before this call — a genuinely first-ever liberation, not a repeat
+  // Checked against the actual unlock POOL, not the liberation-history map
+  // below — that map only ever records liberation EVENTS, with no concept
+  // of the base 45 at all, so a base country's first-ever liberation was
+  // incorrectly reading as a "new unlock" even though it was already
+  // available from the very start. _faceoffUnlockedIsos is seeded with
+  // the base set up front specifically so this check is correct for both
+  // cases: false for any base country (already in the set, regardless of
+  // liberation history) and false for anything already earned before.
+  const isNewUnlock = !_faceoffUnlockedIsos.has(country.iso);
   _chronicle.liberatedTotal++;
   _chronicleTally(_chronicle.liberatedByIso, country);
   _chronicle.currentStreak++;
@@ -3545,7 +3553,7 @@ function _showCountryUnlockedBanner(iso, countryName){
     img.src = 'assets/flags/'+iso+'.webp';
     img.alt = '';
     const label = document.createElement('span');
-    label.textContent = countryName+' unlocked for Face-off challenge!';
+    label.textContent = countryName+' unlocked for Face-off challenge! ('+_faceoffUnlockedIsos.size+'/237)';
     banner.appendChild(img);
     banner.appendChild(label);
     banner.classList.add('show');
