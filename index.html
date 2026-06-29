@@ -3339,6 +3339,7 @@ let _faceoffUnlockedIsos = new Set(BASE_COUNTRY_ISOS);
 // seeded in synchronously at script load, well before this async call
 // could ever resolve.
 window.faceoffHydrateProgress = function(data){
+  console.log('[Face-off] hydrating progress — liberatedByIso present:', !!data.liberatedByIso, 'entries:', data.liberatedByIso?Object.keys(data.liberatedByIso).length:0, 'raw:', data.liberatedByIso);
   if(data.liberatedByIso){
     Object.assign(_chronicle.liberatedByIso, data.liberatedByIso);
     Object.keys(data.liberatedByIso).forEach(iso=>_faceoffUnlockedIsos.add(iso));
@@ -3347,12 +3348,19 @@ window.faceoffHydrateProgress = function(data){
   if(typeof data.liberatedTotal==='number') _chronicle.liberatedTotal = data.liberatedTotal;
   if(typeof data.lostTotal==='number') _chronicle.lostTotal = data.lostTotal;
   if(typeof data.longestStreak==='number') _chronicle.longestStreak = data.longestStreak;
-  // Covers the edge case of this resolving while the picker happens to
-  // already be open (shouldn't normally happen — this fires once at page
-  // load, long before Face-off could realistically be reached — but cheap
-  // to handle correctly rather than assume it never will).
+  // Covers the edge case of this resolving while the picker — or now the
+  // Chronicle popup — happens to already be open (shouldn't normally
+  // happen, since this fires once at page load, long before either could
+  // realistically be reached — but cheap to handle correctly rather than
+  // assume it never will). The Chronicle half of this was previously
+  // missing entirely; if it was ever opened in the brief window before
+  // this resolved, it would show correct totals (scalar fields, fine
+  // either way) but an empty per-country list, with no further trigger to
+  // ever re-render it short of a full reload — closing exactly that gap.
   const picker = document.getElementById('flagPickerPopup');
   if(picker && picker.style.display==='flex') _renderFlagPicker();
+  const chronicle = document.getElementById('chroniclePopup');
+  if(chronicle && chronicle.style.display==='flex' && window.renderChronicle) window.renderChronicle();
 };
 
 let _countryUnlockedSound = null;
