@@ -1337,13 +1337,20 @@
     // A genuine identity SWITCH — sign-out landing on a fresh anonymous
     // uid, or a link-conflict landing on someone else's existing account —
     // not just the very first sign-in of the session (no previous uid to
-    // compare against yet). Without this, the previous identity's
+    // compare against yet). Deliberately checks newUid!==_faceoffLastKnownUid
+    // WITHOUT also requiring newUid to be truthy: sign-out's intermediate
+    // state is user=null for a moment BEFORE the automatic re-
+    // anonymization below kicks in, and that null transition needs to
+    // trigger the reset right then — waiting for the next real uid to
+    // show up is too late, since by then _faceoffLastKnownUid has already
+    // been overwritten to null and the switch looks like a first sign-in
+    // rather than a switch at all. Without this, the previous identity's
     // hydrated Chronicle/picker-unlock data just keeps sitting in memory:
     // best case shown stale after a sign-out with no document yet to
     // overwrite it, worst case silently MIXED with the new identity's own
     // data once it does load, since hydration's Object.assign only ever
     // adds keys, it never clears ones that no longer belong.
-    if(_faceoffLastKnownUid && newUid && newUid!==_faceoffLastKnownUid){
+    if(_faceoffLastKnownUid && newUid!==_faceoffLastKnownUid){
       if(window.faceoffResetProgressState) window.faceoffResetProgressState();
     }
     _faceoffLastKnownUid = newUid;
