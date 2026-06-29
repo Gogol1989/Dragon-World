@@ -581,7 +581,7 @@
      hundred entries, so a flowing text list the same shape as the
      liberated/lost ones would get unreadably long; a wrapping grid scales
      the same way the flag picker's own grid already does. */
-  .chronicle-flags{display:flex;flex-wrap:wrap;gap:3px;margin-top:4px;}
+  .chronicle-flags{display:flex;flex-wrap:wrap;gap:3px;margin-top:4px;font-family:'Cinzel',Georgia,serif;font-weight:400;font-size:clamp(9px,1.2vw,11px);color:#8a5a1c;}
   .chronicle-flags img{height:14px;width:auto;border-radius:1px;box-shadow:0 0 0 1px rgba(0,0,0,.3);object-fit:contain;}
   /* Body-text variant used by the Guide's Gameplay Basics paragraphs — same
      Cinzel family/color as .chronicle-list, just sized for reading prose
@@ -3564,13 +3564,23 @@ function renderChronicle(){
 // (any player who's been thorough in Defend mode), so showing full names
 // inline the same way those lists do would get unreadably long; a flag
 // grid scales to that size the way the picker's own grid already does.
+// lists above, this can realistically grow to well over a hundred entries
+// (any player who's been thorough in Defend mode), so showing full names
+// inline the same way those lists do would get unreadably long; a flag
+// grid scales to that size the way the picker's own grid already does.
+// Deliberately excludes the base 45 — those aren't an achievement, every
+// player starts with them, so showing them here would bury the countries
+// actually earned through Defend mode in a sea of flags everyone has.
+// The heading's count above still reflects the true total though (base +
+// earned), since that's a meaningful overall stat on its own.
 function _renderUnlockedFlags(){
   const container = document.getElementById('chronUnlockedFlags');
   if(!container) return;
-  container.innerHTML='';
   const names = _isoToName();
-  const sorted = [..._faceoffUnlockedIsos].sort((a,b)=>(names[a]||a).localeCompare(names[b]||b));
-  sorted.forEach(iso=>{
+  const earned = [..._faceoffUnlockedIsos].filter(iso=>!BASE_COUNTRY_ISOS.includes(iso));
+  if(!earned.length){ container.innerHTML = 'None yet'; return; }
+  container.innerHTML='';
+  earned.sort((a,b)=>(names[a]||a).localeCompare(names[b]||b)).forEach(iso=>{
     const img = document.createElement('img');
     img.src = 'assets/flags/'+iso+'.webp';
     img.alt = iso;
