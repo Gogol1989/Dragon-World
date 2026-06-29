@@ -1275,7 +1275,7 @@
     getAuth, signInAnonymously, GoogleAuthProvider, signInWithPopup, signInWithRedirect, getRedirectResult, linkWithPopup, linkWithRedirect, signOut, onAuthStateChanged
   } from "https://www.gstatic.com/firebasejs/12.15.0/firebase-auth.js";
   import {
-    getFirestore, doc, setDoc, getDoc, updateDoc, deleteDoc, onSnapshot, serverTimestamp, runTransaction, arrayUnion
+    getFirestore, doc, setDoc, getDoc, getDocFromServer, updateDoc, deleteDoc, onSnapshot, serverTimestamp, runTransaction, arrayUnion
   } from "https://www.gstatic.com/firebasejs/12.15.0/firebase-firestore.js";
 
   const firebaseConfig = {
@@ -1374,7 +1374,16 @@
   // reasoning as the silent sign-in above.
   async function _loadPlayerProgress(uid){
     try{
-      const snap = await getDoc(doc(db,'playerProgress',uid));
+      // getDocFromServer rather than plain getDoc — deliberately bypasses
+      // the SDK's local cache entirely. liberatedByIso reading back empty
+      // while a sibling scalar field (liberatedTotal) from the exact same
+      // document succeeds is the specific symptom a stale/incomplete
+      // cached copy would produce; this rules that out directly rather
+      // than reasoning about it further. Logs the full raw snapshot too,
+      // so if it's STILL empty even from a guaranteed-fresh server read,
+      // we'll see the complete actual document shape, not just one field.
+      const snap = await getDocFromServer(doc(db,'playerProgress',uid));
+      console.log('[Face-off] progress loaded from server, exists:', snap.exists(), 'fromCache:', snap.metadata.fromCache, 'raw data:', snap.data());
       if(snap.exists() && window.faceoffHydrateProgress) window.faceoffHydrateProgress(snap.data());
     }catch(e){
       console.error('[Face-off] failed to load player progress:', e);
