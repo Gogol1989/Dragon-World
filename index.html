@@ -576,6 +576,13 @@
   .chronicle-heading{font-family:'Cinzel',Georgia,serif;font-weight:600;font-size:clamp(11px,1.6vw,14px);color:#6b4a22;letter-spacing:.3px;}
   .chronicle-list{margin-top:3px;font-family:'Cinzel',Georgia,serif;font-weight:400;font-size:clamp(9px,1.2vw,11px);color:#8a5a1c;line-height:1.55;}
   .chronicle-list img{height:1.15em;width:auto;vertical-align:-2px;border-radius:1px;box-shadow:0 0 0 1px rgba(0,0,0,.3);object-fit:contain;margin-right:3px;}
+  /* Countries-unlocked grid — just flags, hover-title for the name, no
+     inline text the way .chronicle-list has. Can realistically run past a
+     hundred entries, so a flowing text list the same shape as the
+     liberated/lost ones would get unreadably long; a wrapping grid scales
+     the same way the flag picker's own grid already does. */
+  .chronicle-flags{display:flex;flex-wrap:wrap;gap:3px;margin-top:4px;}
+  .chronicle-flags img{height:14px;width:auto;border-radius:1px;box-shadow:0 0 0 1px rgba(0,0,0,.3);object-fit:contain;}
   /* Body-text variant used by the Guide's Gameplay Basics paragraphs — same
      Cinzel family/color as .chronicle-list, just sized for reading prose
      rather than a small secondary caption line. */
@@ -1107,6 +1114,14 @@
       <h2 id="chronicleTitle" class="legacy-style-title">Legacy</h2>
       <div id="chronicleScroll" class="legacy-style-scroll">
         <div class="chronicle-row">
+          <img class="chronicle-icon" src="assets/Globe.webp" alt="">
+          <div class="chronicle-text">
+            <div class="chronicle-heading">Countries unlocked for Face-off: <span id="chronUnlockedCount">45</span>/237</div>
+            <div class="chronicle-flags" id="chronUnlockedFlags"></div>
+          </div>
+        </div>
+        <img class="chronicle-div" src="assets/divider.webp" alt="">
+        <div class="chronicle-row">
           <img class="chronicle-icon" src="assets/victory_cup.webp" alt="">
           <div class="chronicle-text">
             <div class="chronicle-heading">Countries Liberated: <span id="chronLiberatedTotal">0</span></div>
@@ -1126,6 +1141,13 @@
           <img class="chronicle-icon" src="assets/icon_streak.webp" alt="">
           <div class="chronicle-text">
             <div class="chronicle-heading">Longest Streak: <span id="chronStreak">0</span></div>
+          </div>
+        </div>
+        <img class="chronicle-div" src="assets/divider.webp" alt="">
+        <div class="chronicle-row">
+          <img class="chronicle-icon" src="assets/First.webp" alt="">
+          <div class="chronicle-text">
+            <div class="chronicle-heading">Face-off — Games: <span id="chronFaceoffGames">0</span>, Wins: <span id="chronFaceoffWins">0</span></div>
           </div>
         </div>
       </div>
@@ -1308,8 +1330,23 @@
   // visible Guest/Google choice in the Face-off sign-in screen is
   // untouched and still only appears there; this is purely about making
   // sure SOME identity exists before that screen is ever reached.
+  let _faceoffLastKnownUid = null;
   window.faceoffUser = null;
   onAuthStateChanged(auth, (user)=>{
+    const newUid = user ? user.uid : null;
+    // A genuine identity SWITCH — sign-out landing on a fresh anonymous
+    // uid, or a link-conflict landing on someone else's existing account —
+    // not just the very first sign-in of the session (no previous uid to
+    // compare against yet). Without this, the previous identity's
+    // hydrated Chronicle/picker-unlock data just keeps sitting in memory:
+    // best case shown stale after a sign-out with no document yet to
+    // overwrite it, worst case silently MIXED with the new identity's own
+    // data once it does load, since hydration's Object.assign only ever
+    // adds keys, it never clears ones that no longer belong.
+    if(_faceoffLastKnownUid && newUid && newUid!==_faceoffLastKnownUid){
+      if(window.faceoffResetProgressState) window.faceoffResetProgressState();
+    }
+    _faceoffLastKnownUid = newUid;
     window.faceoffUser = user;
     if(window._updateAccountMenuLabel) window._updateAccountMenuLabel();
     if(user){
@@ -1460,6 +1497,29 @@
         }
       } else {
         console.error('[Face-off] failed to sync lost country:', e);
+      }
+    }
+  };
+
+  // Plain, non-dotted scalar fields, so unlike the two functions above
+  // there's no nested-path concern here at all — updateDoc would work
+  // for these regardless. Kept to the same updateDoc-then-setDoc-on-
+  // not-found shape anyway, purely for consistency with everything else
+  // touching this same document.
+  window.faceoffSyncMatchResult = async function(gamesPlayed, wins){
+    if(!window.faceoffUser) return;
+    const ref = doc(db,'playerProgress',window.faceoffUser.uid);
+    try{
+      await updateDoc(ref, { faceoffGamesPlayed: gamesPlayed, faceoffWins: wins });
+    }catch(e){
+      if(e.code==='not-found'){
+        try{
+          await setDoc(ref, { faceoffGamesPlayed: gamesPlayed, faceoffWins: wins }, {merge:true});
+        }catch(e2){
+          console.error('[Face-off] failed to create progress doc (match result):', e2);
+        }
+      } else {
+        console.error('[Face-off] failed to sync match result:', e);
       }
     }
   };
@@ -3336,8 +3396,19 @@ function _invasionFormatTime(seconds){
 let _chronicle = {
   liberatedTotal:0, lostTotal:0,
   liberatedByIso:{}, lostByIso:{},
-  currentStreak:0, longestStreak:0
+  currentStreak:0, longestStreak:0,
+  faceoffGamesPlayed:0, faceoffWins:0
 };
+// Local-first, same pattern as chronicleRecordLiberated below — update the
+// in-memory tally immediately (so Chronicle reflects it instantly if
+// reopened), then sync to Firestore async. A tie counts as a win for this
+// purpose (see the call site in showFaceoffResults) since ranking
+// language already treats "tied for first" as 1st place for both sides.
+function _recordFaceoffMatchResult(won){
+  _chronicle.faceoffGamesPlayed++;
+  if(won) _chronicle.faceoffWins++;
+  if(window.faceoffSyncMatchResult) window.faceoffSyncMatchResult(_chronicle.faceoffGamesPlayed, _chronicle.faceoffWins);
+}
 function _chronicleTally(map, country){
   const cur = map[country.iso] || {n:country.n, count:0};
   cur.count++;
@@ -3353,6 +3424,8 @@ function chronicleRecordLiberated(country){
   if(isNewUnlock){
     _faceoffUnlockedIsos.add(country.iso);
     _showCountryUnlockedBanner(country.iso, country.n);
+    const chronicle = document.getElementById('chroniclePopup');
+    if(chronicle && chronicle.style.display==='flex') renderChronicle();
   }
 }
 function chronicleRecordLost(country){
@@ -3387,6 +3460,32 @@ let _faceoffUnlockedIsos = new Set(BASE_COUNTRY_ISOS);
 // rather than replaces, since _faceoffUnlockedIsos already has the base 45
 // seeded in synchronously at script load, well before this async call
 // could ever resolve.
+// Called once, right when the module script detects a genuine identity
+// switch (different uid than before — a sign-out, or a link-conflict
+// landing on someone else's account) — clears the in-memory Chronicle/
+// picker-unlock state back to a fresh, no-history default BEFORE the new
+// identity's own data (if any) gets a chance to load. Without this,
+// faceoffHydrateProgress's Object.assign calls only ever ADD entries —
+// they never remove ones that belonged to whoever was signed in a moment
+// ago, so skipping this reset would either leave stale data visible (no
+// document yet for a brand new anonymous identity) or, worse, silently
+// mix two different people's countries together once a document does load.
+window.faceoffResetProgressState = function(){
+  _chronicle.liberatedTotal = 0;
+  _chronicle.lostTotal = 0;
+  _chronicle.liberatedByIso = {};
+  _chronicle.lostByIso = {};
+  _chronicle.currentStreak = 0;
+  _chronicle.longestStreak = 0;
+  _chronicle.faceoffGamesPlayed = 0;
+  _chronicle.faceoffWins = 0;
+  _faceoffUnlockedIsos = new Set(BASE_COUNTRY_ISOS);
+  const picker = document.getElementById('flagPickerPopup');
+  if(picker && picker.style.display==='flex') _renderFlagPicker();
+  const chronicle = document.getElementById('chroniclePopup');
+  if(chronicle && chronicle.style.display==='flex' && window.renderChronicle) window.renderChronicle();
+};
+
 window.faceoffHydrateProgress = function(data){
   console.log('[Face-off] hydrating progress — liberatedByIso present:', !!data.liberatedByIso, 'entries:', data.liberatedByIso?Object.keys(data.liberatedByIso).length:0, 'raw:', data.liberatedByIso);
   if(data.liberatedByIso){
@@ -3397,6 +3496,8 @@ window.faceoffHydrateProgress = function(data){
   if(typeof data.liberatedTotal==='number') _chronicle.liberatedTotal = data.liberatedTotal;
   if(typeof data.lostTotal==='number') _chronicle.lostTotal = data.lostTotal;
   if(typeof data.longestStreak==='number') _chronicle.longestStreak = data.longestStreak;
+  if(typeof data.faceoffGamesPlayed==='number') _chronicle.faceoffGamesPlayed = data.faceoffGamesPlayed;
+  if(typeof data.faceoffWins==='number') _chronicle.faceoffWins = data.faceoffWins;
   // Covers the edge case of this resolving while the picker — or now the
   // Chronicle popup — happens to already be open (shouldn't normally
   // happen, since this fires once at page load, long before either could
@@ -3453,6 +3554,29 @@ function renderChronicle(){
   document.getElementById('chronStreak').textContent=_chronicle.longestStreak;
   document.getElementById('chronLiberatedList').innerHTML=_chronicleFormatList(_chronicle.liberatedByIso);
   document.getElementById('chronLostList').innerHTML=_chronicleFormatList(_chronicle.lostByIso);
+  document.getElementById('chronUnlockedCount').textContent=_faceoffUnlockedIsos.size;
+  document.getElementById('chronFaceoffGames').textContent=_chronicle.faceoffGamesPlayed;
+  document.getElementById('chronFaceoffWins').textContent=_chronicle.faceoffWins;
+  _renderUnlockedFlags();
+}
+// Just flag images, hover-title for the name — unlike the liberated/lost
+// lists above, this can realistically grow to well over a hundred entries
+// (any player who's been thorough in Defend mode), so showing full names
+// inline the same way those lists do would get unreadably long; a flag
+// grid scales to that size the way the picker's own grid already does.
+function _renderUnlockedFlags(){
+  const container = document.getElementById('chronUnlockedFlags');
+  if(!container) return;
+  container.innerHTML='';
+  const names = _isoToName();
+  const sorted = [..._faceoffUnlockedIsos].sort((a,b)=>(names[a]||a).localeCompare(names[b]||b));
+  sorted.forEach(iso=>{
+    const img = document.createElement('img');
+    img.src = 'assets/flags/'+iso+'.webp';
+    img.alt = iso;
+    img.title = names[iso]||iso;
+    container.appendChild(img);
+  });
 }
 function openChronicle(){
   renderChronicle();
@@ -4220,6 +4344,7 @@ window.showFaceoffResults = function(outcome, myElapsed, oppElapsed, myName, opp
   // finished (see _faceoffFinishMyRace, which deliberately leaves all of
   // that visible so finishing early means watching, not a blank screen).
   cancelFaceoffRace();
+  _recordFaceoffMatchResult(outcome==='win'); // outcome is never 'tie' — a tie folds into 'win' for both sides already (see the module script), so this correctly counts a tied finish as a win for stats purposes too
   _faceoffRematchRequested = false;
   const rematchBtn = document.getElementById('faceoffResultsRematchBtn');
   rematchBtn.disabled = false;
